@@ -28,7 +28,7 @@
 #if defined(CSERIAL_DEBUG_PRINT) && CSERIAL_DEBUG_PRINT==1
 #define CSERIALDBG(p) fprintf(stderr,(p))
 #else /*defined(CSERIAL_DEBUG_PRINT) && CSERIAL_DEBUG_PRINT==1*/
-#define CSERIALDBG(p)
+#define CSERIALDBG(...)
 #endif /*defined(CSERIAL_DEBUG_PRINT) && CSERIAL_DEBUG_PRINT==1*/
 
 /*
