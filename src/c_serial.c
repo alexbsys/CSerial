@@ -101,6 +101,46 @@ typedef pthread_mutex_t c_serial_mutex_t;
 #endif /* CSERIAL_PLATFORM_WINDOWS */
 
 
+#ifdef CSERIAL_PLATFORM_MAC
+/*
+ * A pthread_mutex_timedlock() impl for OSX/macOS, which lacks the
+ * real thing.
+ * NOTE: Unlike the real McCoy, won't return EOWNERDEAD, EDEADLK
+ *       or EOWNERDEAD
+ */
+static int macos_pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct
+timespec *abs_timeout)
+{
+    int rv;
+    struct timespec remaining, slept, ts;
+
+    remaining = *abs_timeout;
+    while ((rv = pthread_mutex_trylock(mutex)) == EBUSY) {
+        ts.tv_sec = 0;
+        ts.tv_nsec = (remaining.tv_sec > 0 ? 10000000 :
+                     (remaining.tv_nsec < 10000000 ? remaining.tv_nsec : 10000000));
+        nanosleep(&ts, &slept);
+        ts.tv_nsec -= slept.tv_nsec;
+        if (ts.tv_nsec <= remaining.tv_nsec) {
+            remaining.tv_nsec -= ts.tv_nsec;
+        }
+        else {
+            remaining.tv_sec--;
+            remaining.tv_nsec = (1000000 - (ts.tv_nsec - remaining.tv_nsec));
+        }
+        if (remaining.tv_sec < 0 || (!remaining.tv_sec && remaining.tv_nsec <= 0)) {
+            return ETIMEDOUT;
+        }
+    }
+
+    return rv;
+}
+
+#define pthread_mutex_timedlock macos_pthread_mutex_timedlock
+
+#endif /*CSERIAL_PLATFORM_MAC*/
+
+
 /*
  * Struct Definitions
  */
@@ -151,7 +191,7 @@ static void c_serial_init_serial_io(serial_io_type* io) {
 static int c_serial_set_serial_port_struct(c_serial_port_type* cserial_port, serial_io_type* io) {
 	if (!SetCommState(cserial_port->port, io)) {
 		cserial_port->last_errnum = GetLastError();
-		printf("bad set comm\n");
+		CSERIALDBG("bad set comm\n");
 		return -1;
 	}
 
@@ -162,7 +202,7 @@ static int c_serial_get_serial_port_struct(c_serial_port_type* cserial_port, ser
 	io->DCBlength = sizeof(serial_io_type);
 	if (!GetCommState(cserial_port->port, io)) {
 		cserial_port->last_errnum = GetLastError();
-		printf("bad get comm line %d\n", __LINE__);
+		CSERIALDBG("bad get comm line %d\n", __LINE__);
 		return -1;
 	}
 
@@ -619,7 +659,8 @@ int c_serial_new( c_serial_port_type** port, c_serial_errnum_t* errnum ) {
     new_port->rs485_is_software = 0;
 
 #ifdef CSERIAL_PLATFORM_WINDOWS
-    new_port->mutex = CreateMutex( NULL, FALSE, NULL );
+  new_port->port = INVALID_HANDLE_VALUE;
+  new_port->mutex = CreateMutex( NULL, FALSE, NULL );
 	new_port->cancel_read_event = CreateEvent(NULL, TRUE, FALSE, NULL);
 
 	memset(&(new_port->read_overlap), 0, sizeof(OVERLAPPED));
@@ -645,6 +686,7 @@ int c_serial_new( c_serial_port_type** port, c_serial_errnum_t* errnum ) {
     }
 	
 #else /*CSERIAL_PLATFORM_WINDOWS*/
+    new_port->port = -1;
     pthread_mutex_init( &(new_port->mutex), NULL );
 #endif /* CSERIAL_PLATFORM_WINDOWS */
 
@@ -682,13 +724,20 @@ void c_serial_close( c_serial_port_type* port ) {
 	c_serial_read_cancel(port, -1);
 
 	port->is_open = 0;
-    close( port->port );
 
 #ifdef CSERIAL_PLATFORM_WINDOWS
-	WaitForSingleObject( port->mutex, INFINITE );
+  if (port->port != INVALID_HANDLE_VALUE)
+    close( port->port );
+  port->port = INVALID_HANDLE_VALUE;
+
+  WaitForSingleObject( port->mutex, INFINITE );
 	ReleaseMutex( port->mutex );
 #else /*CSERIAL_PLATFORM_WINDOWS*/
-	pthread_mutex_lock( &(port->mutex) );
+  if (port->port)
+    close( port->port );
+  port->port = -1;
+
+  pthread_mutex_lock( &(port->mutex) );
 	pthread_mutex_unlock( &(port->mutex) );
 #endif /*CSERIAL_PLATFORM_WINDOWS*/
 }
@@ -1282,18 +1331,20 @@ int c_serial_read_data_timeout(
 #ifdef CSERIAL_PLATFORM_WINDOWS
 	ResetEvent(port->cancel_read_event);
 
-	if (GetCommModemStatus(port->port, &original_control_state) == 0) {
-		CSERIALDBG("Unable to get comm modem lines");
-		return CSERIAL_ERROR_GENERIC;
-	}
-
 	do {
+    if (GetCommModemStatus(port->port, &original_control_state) == 0) {
+      CSERIALDBG("Unable to get comm modem lines");
+      ret_code = CSERIAL_ERROR_GENERIC;
+      break;
+    }
+
 		{
 			DWORD com_errors = { 0 };
 			COMSTAT port_status = { 0 };
 			if (!ClearCommError(port->port, &com_errors, &port_status)) {
 				CSERIALDBG("Unable to ClearCommError");
-				return CSERIAL_ERROR_GENERIC;
+        ret_code = CSERIAL_ERROR_GENERIC;
+        break;
 			}
 			else {
 				current_available = port_status.cbInQue;
@@ -1354,7 +1405,8 @@ int c_serial_read_data_timeout(
 				CSERIALDBG("Unable to read bytes from port");
 				ReleaseMutex(port->mutex);
 				*data_length = 0;
-				return CSERIAL_ERROR_GENERIC;
+        ret_code = CSERIAL_ERROR_GENERIC;
+        break;
 			}
 			got_data = 1;
 			*data_length = bytes_got;
@@ -1377,15 +1429,15 @@ int c_serial_read_data_timeout(
 
 		if (GetCommModemStatus(port->port, &modem_lines) == 0) {
 			CSERIALDBG("Unable to get comm modem lines");
-			return -1;
-		}
-
-		memset(lines, 0, sizeof(c_serial_control_lines_type));
-		lines->cts = (modem_lines & MS_CTS_ON) ? 1 : 0;
-		lines->dsr = (modem_lines & MS_DSR_ON) ? 1 : 0;
-		lines->dtr = port->winDTR ? 1 : 0;
-		lines->rts = port->winRTS ? 1 : 0;
-		lines->ri = (modem_lines & MS_RING_ON) ? 1 : 0;
+      ret_code = CSERIAL_ERROR_GENERIC;
+    } else {
+      memset(lines, 0, sizeof(c_serial_control_lines_type));
+      lines->cts = (modem_lines & MS_CTS_ON) ? 1 : 0;
+      lines->dsr = (modem_lines & MS_DSR_ON) ? 1 : 0;
+      lines->dtr = port->winDTR ? 1 : 0;
+      lines->rts = port->winRTS ? 1 : 0;
+      lines->ri = (modem_lines & MS_RING_ON) ? 1 : 0;
+    }
 	}
 
 	if (!got_data) 
@@ -1395,29 +1447,30 @@ int c_serial_read_data_timeout(
 #else /*CSERIAL_PLATFORM_WINDOWS*/
 	atomic_exchange(&port->cancel_read_event, 0);
 
-	if (timeout_msec < 0) {
-		pthread_mutex_lock(&(port->mutex));
-	}
-	else {
-		struct timespec timeout_time;
-		clock_gettime(CLOCK_REALTIME, &timeout_time);
-		timeout_time.tv_sec += timeout_msec / 1000;
-		timeout_time.tv_nsec += (timeout_msec % 1000) * 1000;
+  while (1) {
+    if (timeout_msec < 0) {
+      pthread_mutex_lock(&(port->mutex));
+    }
+    else {
+      struct timespec timeout_time;
+      clock_gettime(CLOCK_REALTIME, &timeout_time);
+      timeout_time.tv_sec += timeout_msec / 1000;
+      timeout_time.tv_nsec += (timeout_msec % 1000) * 1000;
 
-		if (pthread_mutex_timedlock(&(port->mutex), &timeout_time) != 0) {
-			return CSERIAL_ERROR_TIMEOUT;
-		}
-	}
+      if (pthread_mutex_timedlock(&(port->mutex), &timeout_time) != 0) {
+        ret_code = CSERIAL_ERROR_TIMEOUT;
+        break;
+      }
+    }
 
-	/* first get the original state of the serial port lines */
-	if (ioctl(port->port, TIOCMGET, &original_control_state) < 0) {
-		/* Some USB emulated serials may not support lines at all */
-		can_read_control_state = 0;
-		if (lines)
-			lines->unsupported = 1;
-	}
+    /* first get the original state of the serial port lines */
+    if (ioctl(port->port, TIOCMGET, &original_control_state) < 0) {
+      /* Some USB emulated serials may not support lines at all */
+      can_read_control_state = 0;
+      if (lines)
+        lines->unsupported = 1;
+    }
 
-	while (1) {
 		uint64_t time_elapsed = c_serial_get_tick_count() - start_timestamp;
 		if (timeout_msec >= 0 && time_elapsed >= (uint64_t)timeout_msec) {
 			ret_code = CSERIAL_ERROR_TIMEOUT;
@@ -1444,6 +1497,7 @@ int c_serial_read_data_timeout(
 		}
 
 		select_status = select(port->port + 1, &fdset, NULL, NULL, &timeout);
+
 		if (select_status < 0) {
 			if (errno != EBADF) {
 				port->last_errnum = errno;
@@ -1468,6 +1522,7 @@ int c_serial_read_data_timeout(
 				/* The state of the lines have not changed,
 				 * continue on until something changes
 							  */
+				pthread_mutex_unlock(&(port->mutex));
 				continue;
 			}
 		}
@@ -1477,6 +1532,7 @@ int c_serial_read_data_timeout(
 		}
 
     if (select_status == 0) {
+      pthread_mutex_unlock(&(port->mutex));
       continue;
     }
 
@@ -1517,8 +1573,10 @@ int c_serial_read_data_timeout(
 				should_continue = 0;
 			}
 
-			if (should_continue) 
+			if (should_continue) {
+				pthread_mutex_unlock(&(port->mutex));
 				continue;
+			}
 
 			break;
 		}
@@ -1546,7 +1604,6 @@ int c_serial_read_data_timeout(
 	else {
 		*data_length = 0;
 	}
-
 	if (ret_code == CSERIAL_OK 
 		&& lines != NULL) {
 
