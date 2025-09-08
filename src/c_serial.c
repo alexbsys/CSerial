@@ -1228,7 +1228,7 @@ int c_serial_write_data(c_serial_port_type* port,
 
 int c_serial_write_data_timeout(
 	c_serial_port_type* port,
-	void* data,
+	const void* data,
 	int* length,
 	int timeout_msec) {
 #ifdef CSERIAL_PLATFORM_WINDOWS

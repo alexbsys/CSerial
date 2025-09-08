@@ -308,11 +308,11 @@ CSERIAL_EXPORT enum CSerial_Flow_Control c_serial_get_flow_control(
  * @return status code
  */
 CSERIAL_EXPORT int c_serial_write_data( c_serial_port_type* port,
-                                        void* data,
+                                        const void* data,
                                         int* length );
 
 CSERIAL_EXPORT int c_serial_write_data_timeout(c_serial_port_type* port,
-	void* data,
+	const void* data,
 	int* length,
 	int timeout_msec);
 
