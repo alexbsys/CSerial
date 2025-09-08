@@ -920,20 +920,22 @@ int c_serial_set_baud_rate(
     return CSERIAL_OK;
 }
 
-int c_serial_get_baud_rate( 
-	c_serial_port_type* port ) {
+int c_serial_get_baud_rate(c_serial_port_type* port ) {
     int baud_return;
-	serial_io_type newio;
+    serial_io_type newio;
 
-	if (port == NULL)
-		return CSERIAL_ERROR_INVALID_PORT;
+    if (port == NULL) {
+      return CSERIAL_ERROR_INVALID_PORT;
+    }
 
-    if( !port->is_open ) 
-        return port->baud_rate;
+    if( !port->is_open ) {
+      return port->baud_rate;
+    }
 
-	c_serial_init_serial_io(&newio);
-	if (c_serial_get_serial_port_struct(port, &newio) < 0)
-		return CSERIAL_ERROR_GENERIC;
+    c_serial_init_serial_io(&newio);
+    if (c_serial_get_serial_port_struct(port, &newio) < 0) {
+      return CSERIAL_ERROR_GENERIC;
+    }
 
 #ifdef CSERIAL_PLATFORM_WINDOWS
     GetCommState( port->port, &newio );
@@ -2087,7 +2089,7 @@ const char** c_serial_get_serial_ports_list() {
 }
 
 void c_serial_free_serial_ports_list( const char** port_list ) {
-    const char** real_port_list = (char**)port_list;
+    const char** real_port_list = port_list;
     int x;
     for( x = 0; x < CSERIAL_MAX_PORTS; x++ ) {
         if( real_port_list[x] == NULL ) {

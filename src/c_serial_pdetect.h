@@ -41,8 +41,7 @@
 #if !defined(CSERIAL_PLATFORM_UNIX) && defined(CSERIAL_PLATFORM_POSIX_BASED)
 #if defined(__linux__) || defined(__linux) || defined(__gnu_linux) || defined(linux)
 #define CSERIAL_PLATFORM_LINUX
-#endif  /* defined(__linux__) || defined(__linux) || defined(__gnu_linux) ||
-		   defined(linux)*/
+#endif  /* defined(__linux__) || defined(__linux) || defined(__gnu_linux) || defined(linux)*/
 #endif  /*! defined CSERIAL_PLATFORM_UNIX && defined(CSERIAL_PLATFORM_POSIX_BASED)*/
 
 
@@ -119,5 +118,14 @@
 #define CSERIAL_COMPILER_GCC_COMPAT
 #endif /*CSERIAL_COMPILER_GCC || CSERIAL_COMPILER_CLANG || CSERIAL_COMPILER_XLC*/
 
+/****** FUNC_INTERNAL_USED macro declaration ******/
+
+#if defined(__GNUC__) || defined(__clang__)
+#define FUNC_INTERNAL_USED __attribute__((used))
+#elif defined(_MSC_VER)
+#define FUNC_INTERNAL_USED __pragma(warning(suppress: 4505 4514))
+#else
+#define FUNC_INTERNAL_USED
+#endif
 
 #endif /*C_SERIAL_PDETECT_HEADER*/
