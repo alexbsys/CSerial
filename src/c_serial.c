@@ -98,6 +98,34 @@ typedef HANDLE c_serial_mutex_t;
 typedef struct termios serial_io_type;
 typedef pthread_mutex_t c_serial_mutex_t;
 
+#ifdef CSERIAL_PLATFORM_LINUX
+/*
+ * termios2 / BOTHER support for arbitrary baud rates on Linux.
+ * The kernel's struct termios2 has NCCS=19, different from glibc's termios (NCCS=32).
+ * We define a local struct to avoid header conflicts between <termios.h> and <asm/termbits.h>.
+ */
+struct c_serial_termios2 {
+	unsigned int c_iflag;
+	unsigned int c_oflag;
+	unsigned int c_cflag;
+	unsigned int c_lflag;
+	unsigned char c_line;
+	unsigned char c_cc[19];
+	unsigned int c_ispeed;
+	unsigned int c_ospeed;
+};
+
+#ifndef BOTHER
+#define BOTHER  0010000
+#endif
+#ifndef CBAUD
+#define CBAUD   0010017
+#endif
+
+#define CSERIAL_TCGETS2  _IOR('T', 0x2A, struct c_serial_termios2)
+#define CSERIAL_TCSETSW2 _IOW('T', 0x2C, struct c_serial_termios2)
+#endif /*CSERIAL_PLATFORM_LINUX*/
+
 #endif /* CSERIAL_PLATFORM_WINDOWS */
 
 
@@ -398,11 +426,15 @@ static int set_raw_input(c_serial_port_type* port) {
         }
     }
 #else /* CSERIAL_PLATFORM_WINDOWS */
+    /* Full raw mode: disable all input processing, output processing,
+     * canonical mode, echo, and signals.  Equivalent to cfmakeraw() but
+     * explicit so we also clear IXON/IXOFF/ISTRIP which cfmakeraw misses. */
+    newio.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP |
+                        INLCR | IGNCR | ICRNL | IXON | IXOFF | IXANY);
     newio.c_iflag |= IGNBRK;
-    newio.c_iflag &= ~BRKINT;
-    newio.c_iflag &= ~ICRNL;
-    newio.c_oflag = 0;
-    newio.c_lflag = 0;
+    newio.c_oflag &= ~OPOST;
+    newio.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    newio.c_cflag |= (CLOCAL | CREAD);
     newio.c_cc[VTIME] = 0;
     newio.c_cc[VMIN] = 1;
 #endif /* CSERIAL_PLATFORM_WINDOWS */
@@ -413,6 +445,35 @@ static int set_raw_input(c_serial_port_type* port) {
     return CSERIAL_OK;
 }
 
+#ifdef CSERIAL_PLATFORM_LINUX
+/**
+ * Set an arbitrary baud rate on Linux using the termios2/BOTHER ioctl.
+ * This is the same mechanism pyserial uses for non-standard baud rates.
+ */
+static int set_custom_baud_rate_linux(c_serial_port_type* desc, int baud_rate) {
+	struct c_serial_termios2 tio;
+
+	if (ioctl(desc->port, CSERIAL_TCGETS2, &tio) < 0) {
+		desc->last_errnum = errno;
+		CSERIALDBG("TCGETS2 ioctl failed\n");
+		return CSERIAL_ERROR_GENERIC;
+	}
+
+	tio.c_cflag &= ~CBAUD;
+	tio.c_cflag |= BOTHER;
+	tio.c_ispeed = baud_rate;
+	tio.c_ospeed = baud_rate;
+
+	if (ioctl(desc->port, CSERIAL_TCSETSW2, &tio) < 0) {
+		desc->last_errnum = errno;
+		CSERIALDBG("TCSETSW2 ioctl failed\n");
+		return CSERIAL_ERROR_GENERIC;
+	}
+
+	return CSERIAL_OK;
+}
+#endif /*CSERIAL_PLATFORM_LINUX*/
+
 static int set_baud_rate(c_serial_port_type* desc, int baud_rate) {
 	serial_io_type newio;
 
@@ -421,16 +482,19 @@ static int set_baud_rate(c_serial_port_type* desc, int baud_rate) {
 		return CSERIAL_ERROR_GENERIC;
 
     switch(baud_rate) {
+#ifdef CSERIAL_PLATFORM_LINUX
+		default:
+			return set_custom_baud_rate_linux(desc, baud_rate);
+#else
 		DEFAULT_SPEED_SWITCH(baud_rate, newio);
+#endif
 #ifndef CSERIAL_PLATFORM_WINDOWS
-        /* Note that Windows only supports speeds of 110 and above */
         SPEED_SWITCH(0,newio);
         SPEED_SWITCH(50,newio);
         SPEED_SWITCH(75,newio);
 #endif /*CSERIAL_PLATFORM_WINDOWS*/
         SPEED_SWITCH(110,newio);
 #ifndef CSERIAL_PLATFORM_WINDOWS
-        /* Windows does not support speeds of 134, 150, or 200 */
         SPEED_SWITCH(134,newio);
         SPEED_SWITCH(150,newio);
         SPEED_SWITCH(200,newio);
@@ -439,7 +503,6 @@ static int set_baud_rate(c_serial_port_type* desc, int baud_rate) {
         SPEED_SWITCH(600,newio);
         SPEED_SWITCH(1200,newio);
 #ifndef CSERIAL_PLATFORM_WINDOWS
-        /* Windows does not support 1800 */
         SPEED_SWITCH(1800,newio);
 #endif /*CSERIAL_PLATFORM_WINDOWS*/
         SPEED_SWITCH(2400,newio);
@@ -448,6 +511,21 @@ static int set_baud_rate(c_serial_port_type* desc, int baud_rate) {
         SPEED_SWITCH(19200,newio);
         SPEED_SWITCH(38400,newio);
         SPEED_SWITCH(115200,newio);
+#ifdef CSERIAL_PLATFORM_LINUX
+        SPEED_SWITCH(230400,newio);
+        SPEED_SWITCH(460800,newio);
+        SPEED_SWITCH(500000,newio);
+        SPEED_SWITCH(576000,newio);
+        SPEED_SWITCH(921600,newio);
+        SPEED_SWITCH(1000000,newio);
+        SPEED_SWITCH(1152000,newio);
+        SPEED_SWITCH(1500000,newio);
+        SPEED_SWITCH(2000000,newio);
+        SPEED_SWITCH(2500000,newio);
+        SPEED_SWITCH(3000000,newio);
+        SPEED_SWITCH(3500000,newio);
+        SPEED_SWITCH(4000000,newio);
+#endif /*CSERIAL_PLATFORM_LINUX*/
     }
 
 	if (c_serial_set_serial_port_struct(desc, &newio) < 0)
@@ -780,7 +858,7 @@ int c_serial_open_keep_settings(
         return CSERIAL_ERROR_GENERIC;
     }
 #else /*CSERIAL_PLATFORM_WINDOWS*/
-    port->port = open( port->port_name, O_RDWR );
+    port->port = open( port->port_name, O_RDWR | O_NOCTTY );
     if( port->port < 0 ) {
         port->last_errnum = errno;
         if( port->last_errnum == ENOENT ) {
@@ -815,11 +893,6 @@ int c_serial_open_keep_settings(
 			c_serial_close(port);
 			break;
 		}
-		retval = set_baud_rate(port, port->baud_rate);
-		if (retval) {
-			c_serial_close(port);
-			break;
-		}
 		retval = set_data_bits(port, port->data_bits);
 		if (retval) {
 			c_serial_close(port);
@@ -836,6 +909,13 @@ int c_serial_open_keep_settings(
 			break;
 		}
 		retval = set_flow_control(port, port->flow, port->rs485);
+		if (retval) {
+			c_serial_close(port);
+			break;
+		}
+		/* Baud rate last: on Linux, non-standard rates use termios2/BOTHER
+		 * ioctl which could be overwritten by subsequent tcsetattr calls. */
+		retval = set_baud_rate(port, port->baud_rate);
 		if (retval) {
 			c_serial_close(port);
 			break;
