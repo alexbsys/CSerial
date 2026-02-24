@@ -426,14 +426,14 @@ static int set_raw_input(c_serial_port_type* port) {
         }
     }
 #else /* CSERIAL_PLATFORM_WINDOWS */
-    /* Full raw mode: disable all input processing, output processing,
-     * canonical mode, echo, and signals.  Equivalent to cfmakeraw() but
-     * explicit so we also clear IXON/IXOFF/ISTRIP which cfmakeraw misses. */
-    newio.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP |
-                        INLCR | IGNCR | ICRNL | IXON | IXOFF | IXANY);
-    newio.c_iflag |= IGNBRK;
-    newio.c_oflag &= ~OPOST;
-    newio.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    /* Full raw mode for binary serial data (CRSF etc.):
+     * - c_iflag: clear everything, then set IGNBRK only
+     * - c_oflag: clear all output processing (critical for binary TX!)
+     * - c_lflag: clear all (no echo, no canonical, no signals)
+     * - c_cflag: ensure receiver enabled and modem lines ignored */
+    newio.c_iflag = IGNBRK;
+    newio.c_oflag = 0;
+    newio.c_lflag = 0;
     newio.c_cflag |= (CLOCAL | CREAD);
     newio.c_cc[VTIME] = 0;
     newio.c_cc[VMIN] = 1;
@@ -1529,6 +1529,13 @@ int c_serial_read_data_timeout(
 #else /*CSERIAL_PLATFORM_WINDOWS*/
 	atomic_exchange(&port->cancel_read_event, 0);
 
+	/* When caller doesn't need control lines, skip TIOCMGET ioctl entirely.
+	 * For USB serial adapters each ioctl is a USB control transfer (~1-10ms)
+	 * which adds unacceptable latency in tight protocol loops like CRSF. */
+	if (lines == NULL) {
+		can_read_control_state = 0;
+	}
+
   while (1) {
     if (timeout_msec < 0) {
       pthread_mutex_lock(&(port->mutex));
@@ -1545,12 +1552,14 @@ int c_serial_read_data_timeout(
       }
     }
 
-    /* first get the original state of the serial port lines */
-    if (ioctl(port->port, TIOCMGET, &original_control_state) < 0) {
-      /* Some USB emulated serials may not support lines at all */
-      can_read_control_state = 0;
-      if (lines)
-        lines->unsupported = 1;
+    /* get the original state of the serial port lines (skip for USB latency when not needed) */
+    if (can_read_control_state) {
+      if (ioctl(port->port, TIOCMGET, &original_control_state) < 0) {
+        /* Some USB emulated serials may not support lines at all */
+        can_read_control_state = 0;
+        if (lines)
+          lines->unsupported = 1;
+      }
     }
 
 		uint64_t time_elapsed = c_serial_get_tick_count() - start_timestamp;
