@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc
+            os: ubuntu-latest
+            cc: gcc
+            cxx: g++
+            flags: ""
+          - name: linux-clang-asan-ubsan
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            flags: -DCSERIAL_ENABLE_ASAN=ON -DCSERIAL_ENABLE_UBSAN=ON
+          - name: linux-clang-tsan
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            flags: -DCSERIAL_ENABLE_TSAN=ON
+          - name: macos
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+            flags: ""
+          - name: macos-asan-ubsan
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+            flags: -DCSERIAL_ENABLE_ASAN=ON -DCSERIAL_ENABLE_UBSAN=ON
+          - name: windows-msvc
+            os: windows-latest
+            cc: cl
+            cxx: cl
+            flags: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake -S . -B build -DCSERIAL_BUILD_EXAMPLES=ON ${{ matrix.flags }}
+          else
+            CC=${{ matrix.cc }} CXX=${{ matrix.cxx }} cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCSERIAL_BUILD_EXAMPLES=ON ${{ matrix.flags }}
+          fi
+
+      - name: Build
+        run: cmake --build build --config Debug --parallel
+
+      - name: Test
+        working-directory: build
+        run: ctest -C Debug --output-on-failure --timeout 60
+
+      - name: Run hardware-free examples
+        shell: bash
+        run: |
+          dir=build/examples
+          [ -d "$dir/Debug" ] && dir="$dir/Debug"
+          "$dir/list_ports"
+          "$dir/settings"
+
+  android:
+    name: android-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-21 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Check shared library is unversioned
+        run: test -f build/libcserial.so && ! ls build/libcserial.so.* 2>/dev/null
+
+  ios:
+    name: ios-${{ matrix.sdk }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphoneos, iphonesimulator]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
