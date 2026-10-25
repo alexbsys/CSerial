@@ -16,7 +16,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#ifndef CSERIAL_STATIC
 #define CSERIAL_STATIC
+#endif
 #include <cserial/c_serial.h>
 
 /**
@@ -26,7 +28,6 @@ int main( int argc, char** argv ){
     c_serial_port_type* m_port;
     c_serial_control_lines_type m_lines;
     int status;
-    int bytes_read;
     uint8_t data[ 255 ];
     int data_length;
     int x;
