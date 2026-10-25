@@ -12,32 +12,58 @@
 #   distributed under the License is distributed on an "AS IS" BASIS,
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
-PROJECT(cserial_example)
+#
+# Built from the main project with -DCSERIAL_BUILD_EXAMPLES=ON, or on its own
+# against an installed CSerial (found with pkg-config).
+CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+PROJECT(cserial_examples C CXX)
 
-IF( UNIX )
+find_package(Threads REQUIRED)
+
+IF( TARGET cserial_static )
+    SET( CSERIAL_EXAMPLE_LIB cserial_static )
+ELSE()
+    find_package(cserial CONFIG QUIET)
+ENDIF()
+
+IF( CSERIAL_EXAMPLE_LIB )
+ELSEIF( TARGET cserial::cserial_static )
+    SET( CSERIAL_EXAMPLE_LIB cserial::cserial_static )
+ELSE()
     find_package(PkgConfig)
-    pkg_search_module( CSERIAL REQUIRED cserial )
-    find_package(Threads REQUIRED)
-ENDIF( UNIX )
+    IF( PKG_CONFIG_FOUND )
+        pkg_search_module( CSERIAL IMPORTED_TARGET cserial )
+    ENDIF()
+    IF( TARGET PkgConfig::CSERIAL )
+        SET( CSERIAL_EXAMPLE_LIB PkgConfig::CSERIAL )
+    ELSE()
+        # No installed library (e.g. Windows): build it from the parent directory
+        SET( CSERIAL_BUILD_TESTS OFF CACHE BOOL "" FORCE )
+        SET( CSERIAL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE )
+        add_subdirectory( ${CMAKE_CURRENT_SOURCE_DIR}/.. ${CMAKE_CURRENT_BINARY_DIR}/cserial )
+        SET( CSERIAL_EXAMPLE_LIB cserial_static )
+    ENDIF()
+ENDIF()
 
-IF( WIN32 )
-    SET( C_SERIAL_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/../include )
-    INCLUDE_DIRECTORIES( ${C_SERIAL_INCLUDE_DIRECTORIES} ${CMAKE_CURRENT_BINARY_DIR} )
-ENDIF( WIN32 )
+SET( CSERIAL_EXAMPLES
+    cserial-example:example_full.c
+    simpleterm:serial_simple_term.cpp
+    list_ports:list_ports.c
+    request_response:request_response.c
+    cancel_and_close:cancel_and_close.c
+    reconnect:reconnect.c
+    control_lines:control_lines.c
+    settings:settings.c
+    loopback_stress:loopback_stress.c )
 
-add_executable( cserial-example example_full.c )
-target_link_libraries( cserial-example ${CSERIAL_LIBRARIES} )
-
-add_executable( simpleterm serial_simple_term.cpp )
-target_link_libraries( simpleterm ${CSERIAL_LIBRARIES} )
-
-if(THREADS_HAVE_PTHREAD_ARG)
-  target_compile_options(cserial-example PUBLIC "-pthread")
-  target_compile_options(simpleterm PUBLIC "-pthread")
-endif()
-if(CMAKE_THREAD_LIBS_INIT)
-  target_link_libraries(cserial-example "${CMAKE_THREAD_LIBS_INIT}")
-  target_link_libraries(simpleterm "${CMAKE_THREAD_LIBS_INIT}")
-endif()
+FOREACH( example ${CSERIAL_EXAMPLES} )
+    STRING( REPLACE ":" ";" parts ${example} )
+    LIST( GET parts 0 name )
+    LIST( GET parts 1 source )
+    add_executable( ${name} ${source} )
+    target_link_libraries( ${name} PRIVATE ${CSERIAL_EXAMPLE_LIB} Threads::Threads )
+    IF( MSVC )
+        target_compile_definitions( ${name} PRIVATE _CRT_SECURE_NO_WARNINGS )
+    ENDIF()
+ENDFOREACH()

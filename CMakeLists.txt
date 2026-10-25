@@ -12,12 +12,25 @@
 #   distributed under the License is distributed on an "AS IS" BASIS,
 #   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #   See the License for the specific language governing permissions and
-PROJECT(cserial)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
 
-CMAKE_MINIMUM_REQUIRED(VERSION 3.1)
+PROJECT(cserial VERSION 0.4.0 LANGUAGES C)
 
 INCLUDE(CheckIncludeFiles)
 INCLUDE(GNUInstallDirs)
+INCLUDE(CMakePackageConfigHelpers)
+
+IF( CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND NOT CMAKE_CROSSCOMPILING )
+    SET( CSERIAL_TESTS_DEFAULT ON )
+ELSE()
+    SET( CSERIAL_TESTS_DEFAULT OFF )
+ENDIF()
+
+OPTION( CSERIAL_BUILD_TESTS "Build CSerial unit tests (requires C++14 and network access for GoogleTest)" ${CSERIAL_TESTS_DEFAULT} )
+OPTION( CSERIAL_BUILD_EXAMPLES "Build the example programs in examples/" OFF )
+OPTION( CSERIAL_ENABLE_ASAN "Build with AddressSanitizer" OFF )
+OPTION( CSERIAL_ENABLE_UBSAN "Build with UndefinedBehaviorSanitizer" OFF )
+OPTION( CSERIAL_ENABLE_TSAN "Build with ThreadSanitizer" OFF )
 
 #
 # CMake variables
@@ -33,18 +46,63 @@ SET( install_targets )
 #
 # library version
 #
-SET(CSERIAL_VERSION_MAJOR 0)
-SET(CSERIAL_VERSION_MINOR 3)
-SET(CSERIAL_VERSION_PATCH 0)
-SET(CSERIAL_VERSION_STRING ${CSERIAL_VERSION_MAJOR}.${CSERIAL_VERSION_MINOR}.${CSERIAL_VERSION_PATCH})
+SET(CSERIAL_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+SET(CSERIAL_VERSION_STRING ${PROJECT_VERSION})
 
 ADD_DEFINITIONS( "-DCSERIAL_VERSION=${CSERIAL_VERSION_STRING}" )
+
+#
+# Sanitizers (GCC/Clang only)
+#
+IF( CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" )
+    SET( CSERIAL_SANITIZE_FLAGS )
+    IF( CSERIAL_ENABLE_ASAN )
+        LIST( APPEND CSERIAL_SANITIZE_FLAGS -fsanitize=address )
+    ENDIF()
+    IF( CSERIAL_ENABLE_UBSAN )
+        LIST( APPEND CSERIAL_SANITIZE_FLAGS -fsanitize=undefined -fno-sanitize-recover=undefined )
+    ENDIF()
+    IF( CSERIAL_ENABLE_TSAN )
+        LIST( APPEND CSERIAL_SANITIZE_FLAGS -fsanitize=thread )
+    ENDIF()
+    IF( CSERIAL_SANITIZE_FLAGS )
+        ADD_COMPILE_OPTIONS( ${CSERIAL_SANITIZE_FLAGS} -fno-omit-frame-pointer -g )
+        ADD_LINK_OPTIONS( ${CSERIAL_SANITIZE_FLAGS} )
+    ENDIF()
+ELSEIF( MSVC AND CSERIAL_ENABLE_ASAN )
+    ADD_COMPILE_OPTIONS( /fsanitize=address )
+ENDIF()
+
+#
+# Enable all warnings
+#
+if(MSVC)
+  if(CMAKE_C_FLAGS MATCHES "/W[0-4]")
+    string(REGEX REPLACE "/W[0-4]" "/W4" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+  else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W4")
+  endif()
+elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-long-long -Wno-unused-parameter -pedantic")
+endif()
 
 #
 # Sources for the library
 #
 SET( C_SERIAL_SOURCES
 	src/c_serial.c )
+IF( WIN32 )
+    LIST( APPEND C_SERIAL_SOURCES src/c_serial_win.c )
+ELSE()
+    LIST( APPEND C_SERIAL_SOURCES src/c_serial_posix.c )
+    IF( APPLE )
+        LIST( APPEND C_SERIAL_SOURCES src/c_serial_darwin.c )
+    ELSEIF( CMAKE_SYSTEM_NAME MATCHES "Linux|Android" )
+        LIST( APPEND C_SERIAL_SOURCES src/c_serial_linux.c )
+    ELSE()
+        LIST( APPEND C_SERIAL_SOURCES src/c_serial_unix.c )
+    ENDIF()
+ENDIF()
 SET( C_SERIAL_HEADERS 
 	include/cserial/c_serial.h )
 
@@ -54,6 +112,7 @@ INCLUDE_DIRECTORIES( ${C_SERIAL_INCLUDE_DIRECTORIES} ${CMAKE_CURRENT_BINARY_DIR}
 CONFIGURE_FILE(config.h.in config.h)
 
 IF( UNIX )
+    SET(THREADS_PREFER_PTHREAD_FLAG ON)
     find_package(Threads REQUIRED)
 ENDIF( UNIX )
 
@@ -62,66 +121,64 @@ ENDIF( UNIX )
 #
 ADD_LIBRARY( cserial SHARED ${C_SERIAL_SOURCES} )
 ADD_LIBRARY( cserial_static STATIC ${C_SERIAL_SOURCES} )
-set_target_properties(cserial PROPERTIES VERSION ${CSERIAL_VERSION_STRING} SOVERSION ${CSERIAL_VERSION_MAJOR} )
+FOREACH( tgt cserial cserial_static )
+    TARGET_INCLUDE_DIRECTORIES( ${tgt} PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}> )
+ENDFOREACH()
+# Same names as after find_package( cserial ), for use as a subproject
+ADD_LIBRARY( cserial::cserial ALIAS cserial )
+ADD_LIBRARY( cserial::cserial_static ALIAS cserial_static )
+
+# Android packaging (Gradle/AGP) only picks up unversioned libcserial.so
+IF( NOT ANDROID )
+    set_target_properties(cserial PROPERTIES VERSION ${CSERIAL_VERSION_STRING} SOVERSION ${CSERIAL_VERSION_MAJOR} )
+ENDIF()
 
 #
 # Install Information
 #
 SET(install_targets ${install_targets} cserial cserial_static )
-IF( UNIX )
-    INSTALL( TARGETS ${install_targets}
-             RUNTIME DESTINATION bin
-             LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-             ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" )
-    INSTALL( FILES ${C_SERIAL_HEADERS} DESTINATION include/cserial )
-ENDIF( UNIX )
-IF( WIN32 )
-    INSTALL( TARGETS ${install_targets}
-             RUNTIME DESTINATION bin
-             LIBRARY DESTINATION lib
-             ARCHIVE DESTINATION lib )
-    INSTALL( FILES ${C_SERIAL_HEADERS} DESTINATION include/cserial )
-ENDIF( WIN32 )
+INSTALL( TARGETS ${install_targets}
+         EXPORT cserialTargets
+         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" )
+INSTALL( FILES ${C_SERIAL_HEADERS} DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/cserial" )
+
+#
+# CMake package: find_package( cserial ) provides cserial::cserial and
+# cserial::cserial_static
+#
+SET( CSERIAL_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/cserial" )
+INSTALL( EXPORT cserialTargets NAMESPACE cserial:: DESTINATION "${CSERIAL_CMAKE_DIR}" )
+CONFIGURE_PACKAGE_CONFIG_FILE( cserialConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/cserialConfig.cmake"
+    INSTALL_DESTINATION "${CSERIAL_CMAKE_DIR}" )
+WRITE_BASIC_PACKAGE_VERSION_FILE( "${CMAKE_CURRENT_BINARY_DIR}/cserialConfigVersion.cmake"
+    COMPATIBILITY SameMinorVersion )
+INSTALL( FILES "${CMAKE_CURRENT_BINARY_DIR}/cserialConfig.cmake"
+               "${CMAKE_CURRENT_BINARY_DIR}/cserialConfigVersion.cmake"
+         DESTINATION "${CSERIAL_CMAKE_DIR}" )
 
 IF( UNIX )
     #
     # pkg-config information
     #
-    SET(PKG_CONFIG_LIBDIR
-        "\${prefix}/lib"
-    )
-    SET(PKG_CONFIG_INCLUDEDIR
-        "\${prefix}/include"
-    )
-    SET(PKG_CONFIG_LIBS
-        "-L\${libdir} -lcserial"
-    )
-    SET(PKG_CONFIG_CFLAGS
-        "-I\${includedir}"
-    )
+    SET(PKG_CONFIG_LIBDIR "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
+    SET(PKG_CONFIG_INCLUDEDIR "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
+    SET(PKG_CONFIG_LIBS "-L\${libdir} -lcserial")
+    SET(PKG_CONFIG_LIBS_PRIVATE "-pthread")
+    SET(PKG_CONFIG_CFLAGS "-I\${includedir}")
 
     CONFIGURE_FILE(
         "${CMAKE_CURRENT_SOURCE_DIR}/cserial.pc.cmake"
         "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
+        @ONLY
     )
-    INSTALL( FILES "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.pc"
-             DESTINATION lib/pkgconfig)
+    INSTALL( FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
+             DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig" )
 ENDIF( UNIX )
-
-#
-# Enable all warnings
-#
-if(MSVC)
-  # Force to always compile with W4
-  if(CMAKE_C_FLAGS MATCHES "/W[0-4]")
-    string(REGEX REPLACE "/W[0-4]" "/W4" CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS}")
-  else()
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W4")
-  endif()
-elseif(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
-  # Update if necessary
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wno-long-long -pedantic")
-endif()
 
 #
 # platform-specific defines
@@ -134,11 +191,19 @@ ENDIF( WIN32 )
 #
 # pthread dependency
 #
-if(THREADS_HAVE_PTHREAD_ARG)
-  target_compile_options(cserial_static PUBLIC "-pthread")
-  target_compile_options(cserial PUBLIC "-pthread")
-endif()
-if(CMAKE_THREAD_LIBS_INIT)
-  target_link_libraries(cserial_static "${CMAKE_THREAD_LIBS_INIT}")
-  target_link_libraries(cserial "${CMAKE_THREAD_LIBS_INIT}")
-endif()
+IF( UNIX )
+    target_link_libraries( cserial_static PUBLIC Threads::Threads )
+    target_link_libraries( cserial PUBLIC Threads::Threads )
+ENDIF( UNIX )
+
+#
+# Tests
+#
+IF( CSERIAL_BUILD_TESTS )
+    enable_testing()
+    add_subdirectory( tests )
+ENDIF()
+
+IF( CSERIAL_BUILD_EXAMPLES )
+    add_subdirectory( examples )
+ENDIF()

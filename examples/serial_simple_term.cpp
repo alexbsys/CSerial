@@ -6,7 +6,9 @@
 #include <thread> // contains <chrono>
 #include <cstring>
 
+#ifndef CSERIAL_STATIC
 #define CSERIAL_STATIC
+#endif
 
 #include <cserial/c_serial.h>
 

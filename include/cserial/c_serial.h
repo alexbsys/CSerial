@@ -90,6 +90,8 @@ typedef int c_serial_errnum_t;
 #define CSERIAL_ERROR_CANCELLED -13
 /** No memory error */
 #define CSERIAL_ERROR_NO_MEMORY -14
+/** An argument is NULL, negative or outside of the allowed range */
+#define CSERIAL_ERROR_INVALID_PARAM -15
 
 /**
  * Serial line flags
@@ -170,13 +172,20 @@ enum CSerial_RTS_Handling{
     CSERIAL_RTS_BEST_AVAILABLE
 };
 
-/*
+/**
  * Opaque type for interfacing with a serial port.
+ *
+ * Thread safety: configure a port from one thread at a time.  One thread may
+ * read while another one writes, and c_serial_read_cancel() and
+ * c_serial_close() may be called while another thread is blocked in a read.
+ * Do not close a port while another thread writes to it, and do not free it
+ * while any other thread may still use it.
  */
 typedef struct c_serial_port c_serial_port_type;
 
 /**
- * Cerate a new C Serial object with default settings.
+ * Create a new C Serial object with default settings (9600 baud, 8 data
+ * bits, no parity, 1 stop bit, no flow control).
  * 
  * @param port A pointer to the pointer that will be filled in with the 
  *  new data.
@@ -196,12 +205,23 @@ CSERIAL_EXPORT void c_serial_free( c_serial_port_type* port );
 
 /**
  * Close the port associated with this serial port.  The port may be opened
- * again by calling c_serial_open()
+ * again by calling c_serial_open(); the settings are kept.
+ *
+ * A read running in another thread is cancelled and waited for before the
+ * handle is closed.  Reads started while the port is closing or closed fail
+ * with CSERIAL_ERROR_NO_SUCH_SERIAL_PORT.  Closing a closed port does nothing.
  */
 CSERIAL_EXPORT void c_serial_close( c_serial_port_type* port );
 
 /**
- * Open the port on the system.
+ * Open the port on the system and apply all cached settings.
+ *
+ * @return CSERIAL_OK, CSERIAL_ERROR_NO_SUCH_SERIAL_PORT if the device does
+ *  not exist, CSERIAL_ERROR_NOT_A_SERIAL_PORT, CSERIAL_ERROR_ALREADY_OPEN,
+ *  CSERIAL_ERROR_NO_PORT if no name was set, or CSERIAL_ERROR_GENERIC with
+ *  the OS error in c_serial_get_last_native_errnum() (e.g. no permission,
+ *  port in use, or a setting the driver rejects).  On error the port is
+ *  left closed.
  */
 CSERIAL_EXPORT int c_serial_open( c_serial_port_type* port );
 
@@ -227,6 +247,8 @@ CSERIAL_EXPORT int c_serial_is_open( c_serial_port_type* port );
  * on Linux and Linux-like systems.
  *
  * The port name is copied to internal memory and may be freed after.
+ * On Windows the name may be at most 6 characters ("COM256") and "\\.\" is
+ * prepended, so c_serial_get_port_name() returns e.g. "\\.\COM3".
  */
 CSERIAL_EXPORT int c_serial_set_port_name( c_serial_port_type* port,
                                            const char* port_name );
@@ -247,6 +269,7 @@ CSERIAL_EXPORT int c_serial_set_baud_rate( c_serial_port_type* port,
  * Get the baud rate of the serial port.  Note that this function returns 
  * a cached value if the port is not open, otherwise it reads directly
  * from the port and returns the proper value.
+ * The same applies to the other c_serial_get_* setting getters.
  */
 CSERIAL_EXPORT int c_serial_get_baud_rate( c_serial_port_type* port );
 
@@ -311,6 +334,14 @@ CSERIAL_EXPORT int c_serial_write_data( c_serial_port_type* port,
                                         const void* data,
                                         int* length );
 
+/**
+ * Write a block of data to the serial port, waiting at most timeout_msec.
+ *
+ * @param length On entry, how many bytes to write.  On return, how many bytes
+ *  were actually written (also on CSERIAL_ERROR_TIMEOUT).
+ * @param timeout_msec Timeout in milliseconds, negative means infinite.
+ * @return CSERIAL_OK, CSERIAL_ERROR_TIMEOUT or another error code
+ */
 CSERIAL_EXPORT int c_serial_write_data_timeout(c_serial_port_type* port,
 	const void* data,
 	int* length,
@@ -425,7 +456,9 @@ CSERIAL_EXPORT int c_serial_set_control_line( c_serial_port_type* port,
                                               int return_state );
 
 /**
- * Get the current state of the serial lines
+ * Get the current state of the serial lines.
+ * Fails with CSERIAL_ERROR_GENERIC on ports without modem lines (ptys, many
+ * USB and Bluetooth adapters); reads report those with lines->unsupported.
  */
 CSERIAL_EXPORT int c_serial_get_control_lines( c_serial_port_type* port,
                                               c_serial_control_lines_type* lines );
@@ -483,9 +516,10 @@ CSERIAL_EXPORT c_serial_errnum_t c_serial_get_last_native_errnum(
  *
  * @return An array of char* listing all of the serial ports on the system
  *  e.g. /dev/ttyS1, /dev/ttyS2 on Linux; COM1,COM2 on Windows.  This array is 
- *  NULL-terminated.
+ *  NULL-terminated and may be empty.  NULL is returned only when out of
+ *  memory.
  */
-CSERIAL_EXPORT const char** c_serial_get_serial_ports_list();
+CSERIAL_EXPORT const char** c_serial_get_serial_ports_list( void );
 
 /**
  * Free the list of serial ports retrieved with c_serial_get_serial_ports
@@ -517,7 +551,9 @@ CSERIAL_EXPORT enum CSerial_RTS_Handling c_serial_get_rts_control(
                                                        c_serial_port_type* port );
 
 /**
- * Flush all data.
+ * Wait until all written data has been transmitted (tcdrain() on POSIX,
+ * FlushFileBuffers() on Windows).  Received data is not discarded: to drop
+ * stale input, read with a timeout of 0 until CSERIAL_ERROR_TIMEOUT.
  */
 CSERIAL_EXPORT int c_serial_flush( c_serial_port_type* port );
 
