@@ -1,3 +1,16 @@
 *.o
 *.swp
-build/**
+
+# CMake build trees
+build/
+build-*/
+out/
+CMakeUserPresets.json
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+
+# Doxygen output
+documentation/

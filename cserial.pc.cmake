@@ -1,9 +1,10 @@
-Name: C Serial library
+prefix=@CMAKE_INSTALL_PREFIX@
+includedir=@PKG_CONFIG_INCLUDEDIR@
+libdir=@PKG_CONFIG_LIBDIR@
+
+Name: cserial
 Description: A cross-platform library for working with serial ports in C.
-Version: ${PROJECT_VERSION}
-Requires: ${PKG_CONFIG_REQUIRES}
-prefix=${CMAKE_INSTALL_PREFIX}
-includedir=${PKG_CONFIG_INCLUDEDIR}
-libdir=${PKG_CONFIG_LIBDIR}
-Libs: ${PKG_CONFIG_LIBS}
-Cflags: ${PKG_CONFIG_CFLAGS}
+Version: @PROJECT_VERSION@
+Libs: @PKG_CONFIG_LIBS@
+Libs.private: @PKG_CONFIG_LIBS_PRIVATE@
+Cflags: @PKG_CONFIG_CFLAGS@
