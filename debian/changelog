@@ -1,3 +1,10 @@
+cserial (0.4) UNRELEASED; urgency=medium
+
+  * Security, threading and portability fixes, see CHANGELOG.md
+  * Install a CMake package and a multiarch pkg-config file
+
+ -- alexb <alexb@clever.team>  Mon, 26 Oct 2026 01:00:00 +0300
+
 cserial (0.3) UNRELEASED; urgency=medium
 
   * Bumped version after release
