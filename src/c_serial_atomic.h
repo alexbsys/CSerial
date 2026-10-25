@@ -6,12 +6,25 @@
 
 /*
  * Atomic implementation
+ *
+ * Two operations on a long shared between threads (is_read_active,
+ * is_closing):
+ *   cserial_atomic_exchange()  store new_val, return the previous value
+ *   cserial_atomic_read()      load the current value
+ * Both are sequentially consistent (full barrier), so a store in one thread
+ * and a following load in another are seen in program order.
+ *
+ * Implementations:
+ *   GCC       __atomic builtins (GCC, Clang, XL C)
+ *   WINDOWS   MSVC _Interlocked* intrinsics; a compare-exchange of 0 with 0
+ *             reads the value with a full barrier and never changes it
+ *   NOATOMIC  plain volatile access, only for single-threaded use
  */
 #define CSERIAL_ATOMIC_IMPL_GCC 1
 #define CSERIAL_ATOMIC_IMPL_WINDOWS 2
 #define CSERIAL_ATOMIC_IMPL_NOATOMIC 4
 
- /* User can override value LOG_ATOMIC_IMPL by himself */
+ /* User can override value CSERIAL_ATOMIC_IMPL by himself */
 #if !defined(CSERIAL_ATOMIC_IMPL)
 #if defined (CSERIAL_COMPILER_GCC_COMPAT)
 #define CSERIAL_ATOMIC_IMPL CSERIAL_ATOMIC_IMPL_GCC
@@ -23,97 +36,49 @@
 
 #endif /*!defined(CSERIAL_ATOMIC_IMPL)*/
 
-#if CSERIAL_ATOMIC_IMPL==LOG_ATOMIC_IMPL_WINDOWS
-long _InterlockedIncrement(long volatile*);
-long _InterlockedDecrement(long volatile*);
-long __cdecl _InterlockedExchange(long volatile*, long);
-long __cdecl _InterlockedCompareExchange(long volatile*, long, long);
-
-#pragma intrinsic(_InterlockedIncrement)
-#pragma intrinsic(_InterlockedDecrement)
+#if CSERIAL_ATOMIC_IMPL==CSERIAL_ATOMIC_IMPL_WINDOWS
+#include <intrin.h>
+#pragma intrinsic(_InterlockedExchange)
 #pragma intrinsic(_InterlockedCompareExchange)
-#endif  /*end of LOG_ATOMIC_IMPL==LOG_ATOMIC_IMPL_WINDOWS*/
+#endif  /*CSERIAL_ATOMIC_IMPL==CSERIAL_ATOMIC_IMPL_WINDOWS*/
 
+/* volatile only keeps the compiler from caching the value, the atomicity
+ * comes from the functions below */
 typedef volatile long atomic_long_type;
 
 #if CSERIAL_ATOMIC_IMPL==CSERIAL_ATOMIC_IMPL_GCC
-/* GCC implementation*/
-static long FUNC_INTERNAL_USED atomic_increment(long volatile* variable) {
-  return __atomic_add_fetch(variable, 1, __ATOMIC_SEQ_CST);
-}
 
-static long FUNC_INTERNAL_USED atomic_decrement(long volatile* variable) {
-  return __atomic_sub_fetch(variable, 1, __ATOMIC_SEQ_CST);
-}
-
-static long FUNC_INTERNAL_USED atomic_exchange(long volatile* variable, long new_val) {
+static long FUNC_INTERNAL_USED cserial_atomic_exchange(long volatile* variable, long new_val) {
   return __atomic_exchange_n(variable, new_val, __ATOMIC_SEQ_CST);
 }
 
-static int FUNC_INTERNAL_USED atomic_compare_exchange(long volatile* variable, long new_val, long* expected_val) {
-  return __atomic_compare_exchange_n(variable, expected_val, new_val, 1, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+static long FUNC_INTERNAL_USED cserial_atomic_read(long volatile* variable) {
+  return __atomic_load_n(variable, __ATOMIC_SEQ_CST);
 }
 
 #elif CSERIAL_ATOMIC_IMPL==CSERIAL_ATOMIC_IMPL_WINDOWS
-/* Windows implementation */
-static long FUNC_INTERNAL_USED atomic_increment(long volatile* variable) {
-  return _InterlockedIncrement(variable);
-}
 
-static long FUNC_INTERNAL_USED atomic_decrement(long volatile* variable) {
-  return _InterlockedDecrement(variable);
-}
-
-static long FUNC_INTERNAL_USED atomic_exchange(long volatile* variable, long new_val) {
+static long FUNC_INTERNAL_USED cserial_atomic_exchange(long volatile* variable, long new_val) {
   return _InterlockedExchange(variable, new_val);
 }
 
-static int FUNC_INTERNAL_USED atomic_compare_exchange(long volatile* variable, long new_val, long* expected_val) {
-  long old_val = _InterlockedCompareExchange(variable, new_val, *expected_val);
-  int ret = old_val == *expected_val;
-  *expected_val = old_val;
-  return ret;
+static long FUNC_INTERNAL_USED cserial_atomic_read(long volatile* variable) {
+  return _InterlockedCompareExchange(variable, 0, 0);
 }
 
 #elif CSERIAL_ATOMIC_IMPL==CSERIAL_ATOMIC_IMPL_NOATOMIC
 
-/* NO ATOMIC SUPPORT, JUST EMULATE OPERATIONS */
-#pragma warning("Atomic operations are not supported!")
-
-static long FUNC_INTERNAL_USED atomic_increment(long volatile* variable) {
+/* No atomic support: plain volatile access, only safe for single-threaded use */
+static long FUNC_INTERNAL_USED cserial_atomic_exchange(long volatile* variable, long new_val) {
   long old_val = *variable;
-  *variable++;
+  *variable = new_val;
   return old_val;
 }
 
-static long FUNC_INTERNAL_USED atomic_decrement(long volatile* variable) {
-  long old_val = *variable;
-  *variable--;
-  return old_val;
-}
-
-static long FUNC_INTERNAL_USED atomic_exchange(long volatile* variable, long new_val) {
-  long old_val = *variable;
+static long FUNC_INTERNAL_USED cserial_atomic_read(long volatile* variable) {
   return *variable;
 }
 
-static int FUNC_INTERNAL_USED atomic_compare_exchange(long volatile* variable, long new_val, long* expected_val) {
-  long old_val = *variable;
-  if (old_val == *expected_val) {
-    *variable = new_val;
-  }
-
-  int ret = old_val == *expected_val;
-  *expected_val = old_val;
-  return ret;
-}
-
 #endif /*end of CSERIAL_ATOMIC_IMPL*/
-
-static long FUNC_INTERNAL_USED atomic_read(long volatile* variable) {
-  long exp_val = 0;
-  atomic_compare_exchange(variable, 0, &exp_val);
-  return exp_val;
-}
 
 #endif /*C_SERIAL_ATOMIC_HEADER*/

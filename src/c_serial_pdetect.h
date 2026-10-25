@@ -2,7 +2,17 @@
 #define C_SERIAL_PDETECT_HEADER
 
 /*
- * Platform detect
+ * Platform detect: turns compiler-predefined macros into CSERIAL_PLATFORM_*
+ * for #ifdefs in the code (the backend source files are chosen by CMake).
+ *   POSIX_BASED  any POSIX system (Linux, Android, macOS, iOS, BSD, Solaris,
+ *                Cygwin)
+ *   LINUX        Linux and Android
+ *   ANDROID      additionally set on Android
+ *   MAC          any Apple system, refined to MACOSX (macOS) or IPHONE
+ *                (iOS, plus IPHONE_SIMULATOR)
+ *   UNIX         other POSIX systems: BSD, ...
+ *   SOLARIS, CYGWIN, BSD, FREEBSD, NETBSD, DRAGONFLYBSD  more specific
+ *   WINDOWS      Win32/Win64 including MinGW
  */
 #if defined(unix) || defined(__unix__) || defined(__unix)
 #define CSERIAL_PLATFORM_POSIX_BASED
@@ -49,6 +59,8 @@
 #define CSERIAL_PLATFORM_POSIX_BASED
 #define CSERIAL_PLATFORM_MAC
 
+/* TARGET_OS_* from the Apple SDK: TARGET_OS_MAC is 1 on every Apple OS,
+ * so the iOS checks must come first */
 #include <TargetConditionals.h>
 #if TARGET_IPHONE_SIMULATOR == 1
 #define CSERIAL_PLATFORM_IPHONE
@@ -119,6 +131,10 @@
 #endif /*CSERIAL_COMPILER_GCC || CSERIAL_COMPILER_CLANG || CSERIAL_COMPILER_XLC*/
 
 /****** FUNC_INTERNAL_USED macro declaration ******/
+
+/* Marks static functions defined in headers (c_serial_atomic.h): silences
+ * "unused static function" warnings in files that include the header but
+ * do not call them (MSVC C4505 / C4514). */
 
 #if defined(__GNUC__) || defined(__clang__)
 #define FUNC_INTERNAL_USED __attribute__((used))
